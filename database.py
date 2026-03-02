@@ -1,13 +1,13 @@
+# Подключаем библиотеки для работы с БД
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
-# Читаем из .env (если хочешь)
 
-# Загружаем из .env
+# Загружаем переменные из .env (пароль и настройки)
 load_dotenv()
 
-# Данные из .env для работы database
+# Данные из .env для работы БД
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_HOST = os.getenv('DB_HOST')
@@ -18,13 +18,15 @@ DB_NAME = os.getenv('DB_NAME')
 if not DB_PASSWORD:
     raise ValueError("DB_PASSWORD не найден в .env! Укажи пароль в .env")
 
+# Подключение к PostgreSQL
 DSN = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
 engine = create_engine(DSN)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Base — базовый класс для всех моделей таблиц
 Base = declarative_base()
 
+# Функция для получения сессии БД
 def get_db():
     db = SessionLocal()
     try:
