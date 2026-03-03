@@ -3,11 +3,16 @@ import telebot
 from dotenv import load_dotenv
 import os
 import random
+import logging
 
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from database import engine, Base, SessionLocal
 from models import WordCard, User, UserWord
 from sqlalchemy import func
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Создание таблиц при запуске
 Base.metadata.create_all(bind=engine)
@@ -85,7 +90,7 @@ def handle_menu_buttons(message):
     if message.text == "Добавить слово ➕":
         add_word_start(message)
 
-    elif message.text == "Показать случайное ⏭️":
+    elif message.text == "Показать случайное 🎲":
         show_next_card(message)
 
     elif message.text == "Статистика 📈":
@@ -205,7 +210,7 @@ def add_word_save(message, user_data):
 @bot.message_handler(commands=['next'])
 def show_next_card(message):
     chat_id = message.chat.id
-    user_tg_id = message.chat.id if message.from_user.is_bot else message.from_user.id
+    user_tg_id = message.from_user.id
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.telegram_id == user_tg_id).first()
@@ -231,6 +236,11 @@ def show_next_card(message):
 
         # Выбираем 3 случайных неправильных ответа
         wrong_answers = random.sample(other_english_words, min(3, len(other_english_words)))
+
+        # Обработка случая когда в БД слишком мало слов
+        if not other_english_words:
+            bot.reply_to(message, "В базе слишком мало слов для квиза. Добавьте ещё слова через /add!")
+            return
 
         # Собираем всё варианты и перемешиваем
         options = wrong_answers + [correct_answer]
@@ -329,6 +339,114 @@ def show_stats(message):
     finally:
         db.close()
 
+# Функция редактирования слова (английское слово)
+def edit_word_english(message, user_data):
+    user_id = message.from_user.id
+    english = message.text.strip()
+
+    if english:  # Если пользователь что-то ввел
+        # Проверка: только буквы и длина до 100 символов
+        if not english.isalpha() or len(english) > 100:
+            bot.reply_to(message, "Некорректное слово. Попробуйте снова.")
+            return
+        user_data[user_id]['english'] = english
+
+    # Переход к следующему шагу — русский перевод
+    msg = bot.send_message(message.chat.id,
+                           "Новый перевод на русский (или Enter для пропуска):")
+    bot.register_next_step_handler(msg, edit_word_russian, user_data)
+
+# Функция редактирования слова (Русский перевод)
+def edit_word_russian(message, user_data):
+    user_id = message.from_user.id
+    russian = message.text.strip()
+
+    if russian: # Если пользователь что-то ввел
+        # Проверка длины (до 200 символов)
+        if len(russian) > 200:
+            bot.reply_to(message, "Перевод слишком длинный. Попробуйте снова.")
+            return
+        user_data[user_id]['russian'] = russian
+
+    # Переход к следующему шагу — транскрипция
+    msg = bot.send_message(message.chat.id,
+                           "Новая транскрипция (или Enter для пропуска):")
+    bot.register_next_step_handler(msg, edit_word_transcription,user_data)
+
+# Функция редактирования слова (Транскрипция)
+def edit_word_transcription(message, user_data):
+    user_id = message.from_user.id
+    transcription = message.text.strip()
+
+    # Если пользователь ввёл что-то
+    if transcription and transcription != '-':
+        user_data[user_id]['transcription'] = transcription
+
+    # Переход к следующему шагу — пример предложения
+    msg = bot.send_message(message.chat.id,
+                           "Новый пример предложения (или Enter для пропуска):")
+    bot.register_next_step_handler(msg, edit_word_example, user_data)
+
+# Функция редактирования слова (пример предложения)
+def edit_word_example(message, user_data):
+    user_id = message.from_user.id
+    example = message.text.strip()
+
+    # Если пользователь ввёл что-то
+    if example and example != '-':
+        user_data[user_id]['example'] = example
+
+    # Переход к следующему шагу — сохранение
+    edit_word_save(message, user_data)
+
+def edit_word_save(message, user_data):
+    user_id = message.from_user.id
+
+    db = SessionLocal()
+    try:
+        edit_data = user_data.get(user_id)
+        if not edit_data:
+            bot.reply_to(message, "Что-то пошло не так. Попробуйте /start")
+            return
+
+        word = db.query(WordCard).filter(WordCard.id == edit_data['edit_id']).first()
+        if not word:
+            bot.reply_to(message, "Слово не найдено в базе.")
+            return
+
+        user = db.query(User).filter(User.telegram_id == user_id).first()
+
+        # Проверка прав (владеет ли пользователь этим словом)
+        link = db.query(UserWord).filter(
+            UserWord.user_id == user.id,
+            UserWord.word_id == word.id
+        ).first()
+
+        if not link:
+            bot.reply_to(message, "Это не ваше слово! Вы не можете его редактировать.")
+            return
+
+        # Обновляем поля если они были введены
+        if edit_data.get('english'):
+            word.english = edit_data['english']
+        if edit_data.get('russian'):
+            word.russian = edit_data['russian']
+        if edit_data.get('transcription'):
+            word.transcription = edit_data['transcription']
+
+        db.commit()
+        bot.reply_to(message, f"✅ Слово «{word.english}» успешно отредактировано!")
+        logger.info(f"Пользователь {user.username} отредактировал слово: {word.english}")
+
+    except Exception as e:
+        db.rollback()
+        bot.reply_to(message, f"Ошибка при редактировании: {str(e)}")
+        logger.error(f"Ошибка при редактировании слова: {e}")
+    finally:
+        db.close()
+        if user_id in user_data:
+            del user_data[user_id]
+
 # Обработка нажатий на inline-кнопки
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -394,8 +512,21 @@ def callback_handler(call):
         # Редактирование слова
         elif call.data.startswith("edit_"):
             word_id = int(call.data.split("_")[1])
+            user = db.query(User).filter(User.telegram_id == call.from_user.id).first()
+
+            link = db.query(UserWord).filter(
+                UserWord.user_id == user.id,
+                UserWord.word_id == word_id
+            ).first()
+
+            if not link:
+                bot.answer_callback_query(call.id, "❌ Это не ваше слово!")
+                return
+
             user_data[call.from_user.id] = {'edit_id': word_id}
-            bot.send_message(call.message.chat.id, "Введите новое значение для английского слова:")
+            msg = bot.send_message(call.message.chat.id,
+                                   "Введите новое значение для английского слова (или Enter для пропуска):")
+            bot.register_next_step_handler(msg, edit_word_english, user_data)
 
     # Сообщение об ошибке
     except Exception as e:
