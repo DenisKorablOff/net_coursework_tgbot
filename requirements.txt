@@ -1,0 +1,11 @@
+# Telegram Bot API
+pyTelegramBotAPI==4.30.0
+
+# Environment variables (.env файл)
+python-dotenv==1.2.1
+
+# Database ORM
+SQLAlchemy==2.0.45
+
+# PostgreSQL driver
+psycopg2-binary==2.9.11

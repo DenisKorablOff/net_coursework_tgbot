@@ -1,5 +1,5 @@
 # Импортируем типы колонок для таблиц БД
-from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -24,6 +24,7 @@ class WordCard(Base):
     transcription = Column(String, nullable=True)  # Транскрипция (не обязательно)
     example = Column(String, nullable=True)  # Пример использования (не обязательно)
 
+    id_base = Column(Boolean, default=False)
     users_link = relationship("UserWord", back_populates="word") # Связь с таблицей UserWord (у каких пользователей есть это слово)
 
 # Таблица связей (какие слова у каких пользователей)

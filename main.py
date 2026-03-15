@@ -10,12 +10,23 @@ from database import engine, Base, SessionLocal
 from models import WordCard, User, UserWord
 from sqlalchemy import func
 
+# 10 Базовых слов
+BASE_WORDS = [
+    {"english": "red", "russian": "красный", "transcription": "[red]"},
+    {"english": "blue", "russian": "синий", "transcription": "[bluː]"},
+    {"english": "green", "russian": "зелёный", "transcription": "[ɡriːn]"},
+    {"english": "yellow", "russian": "жёлтый", "transcription": "[ˈjeləʊ]"},
+    {"english": "black", "russian": "чёрный", "transcription": "[blæk]"},
+    {"english": "I", "russian": "я", "transcription": "[aɪ]"},
+    {"english": "you", "russian": "ты/вы", "transcription": "[juː]"},
+    {"english": "he", "russian": "он", "transcription": "[hiː]"},
+    {"english": "she", "russian": "она", "transcription": "[ʃiː]"},
+    {"english": "we", "russian": "мы", "transcription": "[wiː]"},
+]
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Создание таблиц при запуске
-Base.metadata.create_all(bind=engine)
 
 # Словарь для временного хранения данных пользователя (пока добавляет слово)
 user_data = {}
@@ -30,6 +41,38 @@ if TOKEN is None:
 
 # Создаём экземпляр бота
 bot = telebot.TeleBot(TOKEN)
+
+# Создание таблиц при запуске + 10 базовых слов если их нет
+def init_database():
+    Base.metadata.create_all(bind=engine)
+
+    db = SessionLocal()
+    try:
+        existing_base = db.query(WordCard).filter(WordCard.id_base == True).count()
+
+        if existing_base == 0:
+            print("📦 Заполняю базу базовыми словами...")
+
+            for word_data in BASE_WORDS:
+                new_word = WordCard(
+                    english=word_data["english"],
+                    russian=word_data["russian"],
+                    transcription=word_data.get("transcription"),
+                    example=None,
+                    id_base=True  # Помечаем как базовое
+                )
+                db.add(new_word)
+
+            db.commit()
+            print(f"✅ Добавлено {len(BASE_WORDS)} базовых слов")
+        else:
+            print(f"ℹ️ Базовые слова уже есть ({existing_base} шт.)")
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Ошибка при инициализации: {e}")
+    finally:
+        db.close()
 
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
@@ -50,7 +93,7 @@ def send_welcome(message):
             db.flush() # Получаем ID нового пользователя
 
             # Привязка базовых слов из БД при первой регистрации
-            common_words = db.query(WordCard).all()
+            common_words = db.query(WordCard).filter(WordCard.id_base == True).all()
             for word in common_words:
                 new_link = UserWord(user_id=user.id, word_id=word.id)
                 db.add(new_link)
@@ -175,7 +218,8 @@ def add_word_save(message, user_data):
             english=card_data['english'],
             russian=card_data['russian'],
             transcription=card_data.get('transcription'),
-            example=example
+            example=example,
+            id_base=False
         )
 
         db.add(new_word)
@@ -231,16 +275,16 @@ def show_next_card(message):
         correct_answer = target_card.english
 
         # Получаем другие английские слова для неправильных вариантов
-        other_words = db.query(WordCard.english).filter(WordCard.id != target_card.id).all()
+        other_words = db.query(WordCard.english).filter(WordCard.id.in_(user_word_ids),WordCard.id != target_card.id).all()
         other_english_words = [w[0] for w in other_words]
-
-        # Выбираем 3 случайных неправильных ответа
-        wrong_answers = random.sample(other_english_words, min(3, len(other_english_words)))
 
         # Обработка случая когда в БД слишком мало слов
         if not other_english_words:
             bot.reply_to(message, "В базе слишком мало слов для квиза. Добавьте ещё слова через /add!")
             return
+
+        # Выбираем 3 случайных неправильных ответа
+        wrong_answers = random.sample(other_english_words, min(3, len(other_english_words)))
 
         # Собираем всё варианты и перемешиваем
         options = wrong_answers + [correct_answer]
@@ -455,12 +499,15 @@ def callback_handler(call):
         # Обработка ответов квиза (Правильный/Неправильный ответ)
         if call.data.startswith("quiz_"):
             parts = call.data.split("_")
-            status = parts[1]  # right или wrong
+            status = parts[1]
             word_id = int(parts[2])
             card = db.query(WordCard).filter(WordCard.id == word_id).first()
 
             if status == "right":
-                bot.answer_callback_query(call.id, "✅ Верно!")
+                try:
+                    bot.answer_callback_query(call.id, "✅ Верно!")
+                except:
+                    pass
 
                 # Всплывающее окно при правильном ответе
                 res = f"✅ <b>Правильно!</b>\n\n🇬🇧 {card.english} = 🇷🇺 {card.russian}"
@@ -485,7 +532,11 @@ def callback_handler(call):
                 )
 
             elif status == "wrong":
-                bot.answer_callback_query(call.id, "❌ Неверно, попробуйте ещё раз!")
+                try:
+                    bot.answer_callback_query(call.id, "❌ Неверно, попробуйте ещё раз!")
+                except:
+                    pass
+
                 bot.send_message(
                     call.message.chat.id,
                     f"❌ <b>Неверно!</b>\n\nПопробуйте ещё раз для слова:\n🇬🇧 <b>{card.english}</b>",
@@ -501,26 +552,57 @@ def callback_handler(call):
             word_id = int(call.data.split("_")[1])
             user = db.query(User).filter(User.telegram_id == call.from_user.id).first()
 
+            # Проверяем является ли слово базовым
+            card = db.query(WordCard).filter(WordCard.id == word_id).first()
+
+            # Если слово базовое, запрещаем удаление
+            if card.id_base == True:
+                try:
+                    bot.answer_callback_query(call.id, "❌ Базовое слово нельзя удалить!")
+                except:
+                    pass
+                return  # выходим из функции, ничего не удаляем
+
             # Удаление только связи пользователя со словом
             link = db.query(UserWord).filter(UserWord.user_id == user.id, UserWord.word_id == word_id).first()
-            if link:
-                db.delete(link)
-                db.commit()
-                bot.answer_callback_query(call.id, "Слово удалено из вашего списка")
-                bot.edit_message_text("Слово удалено из вашего списка.", call.message.chat.id, call.message.message_id)
+            if not link:
+                try:
+                    bot.answer_callback_query(call.id, "❌ Это не ваше слово!")
+                except:
+                    pass
+                return
+            db.delete(link)
+            db.delete(card)
+            db.commit()
+            try:
+                    bot.answer_callback_query(call.id, "Слово удалено!")
+            except:
+                pass
+
+            bot.edit_message_text("Слово удалено.", call.message.chat.id, call.message.message_id)
 
         # Редактирование слова
         elif call.data.startswith("edit_"):
             word_id = int(call.data.split("_")[1])
             user = db.query(User).filter(User.telegram_id == call.from_user.id).first()
 
-            link = db.query(UserWord).filter(
-                UserWord.user_id == user.id,
-                UserWord.word_id == word_id
-            ).first()
+            # Проверяем является ли слово базовым
+            card = db.query(WordCard).filter(WordCard.id == word_id).first()
 
+            # Если слово базовое, запрещаем редактирование
+            if card.id_base == True:
+                try:
+                    bot.answer_callback_query(call.id, "❌ Базовое слово нельзя редактировать!")
+                except:
+                    pass
+                return
+
+            link = db.query(UserWord).filter(UserWord.user_id == user.id, UserWord.word_id == word_id).first()
             if not link:
-                bot.answer_callback_query(call.id, "❌ Это не ваше слово!")
+                try:
+                    bot.answer_callback_query(call.id, "❌ Это не ваше слово!")
+                except:
+                    pass
                 return
 
             user_data[call.from_user.id] = {'edit_id': word_id}
@@ -530,8 +612,16 @@ def callback_handler(call):
 
     # Сообщение об ошибке
     except Exception as e:
-        print(f"Ошибка в callback: {e}")
-        bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте снова.")
+        error_msg = str(e)
+        if "query is too old" in error_msg or "query ID is invalid" in error_msg:
+            logger.warning(f"Устаревшая кнопка нажата пользователем {call.from_user.id}")
+        else:
+            logger.error(f"Ошибка в callback: {e}")
+            try:
+                bot.send_message(call.message.chat.id,
+                                 "⚠️ Произошла ошибка. Пожалуйста, начните квиз заново командой /next")
+            except:
+                pass
     finally:
         db.close()
 
