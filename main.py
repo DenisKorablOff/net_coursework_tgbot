@@ -260,33 +260,34 @@ def show_next_card(message):
         user = db.query(User).filter(User.telegram_id == user_tg_id).first()
 
         # Получаем все ID слов которые есть у этого пользователя
-        user_word_ids = db.query(UserWord.word_id).filter(UserWord.user_id == user.id).all()
-        user_word_ids = [id_tuple[0] for id_tuple in user_word_ids]
+        four_cards = (
+            db.query(WordCard)
+            .join(UserWord, WordCard.id == UserWord.word_id)
+            .filter(UserWord.user_id == user.id)
+            .order_by(func.random())
+            .limit(4)
+            .all()
+        )
 
-        if not user_word_ids:
+        # Если нет слов сообщаем пользователю
+        if not four_cards:
             bot.reply_to(message, "В твоем списке пока нет слов. Добавь их через /add!")
             return
 
-        # Выбираем случайное слово из списка пользователя
-        target_word_id = random.choice(user_word_ids)
-        target_card = db.query(WordCard).filter(WordCard.id == target_word_id).first()
+        # Если слов меньше двух, то квиз невозможен
+        if len(four_cards) < 2:
+            bot.reply_to(message, "Слишком мало слов для квиза. Добавь ещё через /add!")
+            return
 
+        # Берём первое слово как правильный ответ
+        target_card = four_cards[0]
         # Правильный ответ — английское слово
         correct_answer = target_card.english
 
-        # Получаем другие английские слова для неправильных вариантов
-        other_words = db.query(WordCard.english).filter(WordCard.id.in_(user_word_ids),WordCard.id != target_card.id).all()
-        other_english_words = [w[0] for w in other_words]
+        # Берём остальные 3 слова как неправильные варианты
+        wrong_answers = [card.english for card in four_cards[1:]]
 
-        # Обработка случая когда в БД слишком мало слов
-        if not other_english_words:
-            bot.reply_to(message, "В базе слишком мало слов для квиза. Добавьте ещё слова через /add!")
-            return
-
-        # Выбираем 3 случайных неправильных ответа
-        wrong_answers = random.sample(other_english_words, min(3, len(other_english_words)))
-
-        # Собираем всё варианты и перемешиваем
+        # Собираем все варианты вместе и перемешиваем
         options = wrong_answers + [correct_answer]
         random.shuffle(options)
 
